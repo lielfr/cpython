@@ -293,6 +293,10 @@ error:
 
 PyObject* pysqlite_connection_cursor(pysqlite_Connection* self, PyObject* args, PyObject* kwargs)
 {
+	if (self == NULL) {
+		return NULL;
+	}
+	
     static char *kwlist[] = {"factory", NULL};
     PyObject* factory = NULL;
     PyObject* cursor;
@@ -1134,6 +1138,9 @@ int pysqlite_check_thread(pysqlite_Connection* self)
 
 static PyObject* pysqlite_connection_get_isolation_level(pysqlite_Connection* self, void* unused)
 {
+	if (!pysqlite_check_connection(self)) {
+		return NULL;
+	}	
     Py_INCREF(self->isolation_level);
     return self->isolation_level;
 }
