@@ -38,6 +38,32 @@ This module defines the following functions:
    returned.
 
 
+.. function:: excepthook(args, /)
+
+   Handle uncaught exception raised by :func:`Thread.run`.
+
+   The *args* argument has the following attributes:
+
+   * *exc_type*: Exception type.
+   * *exc_value*: Exception value, can be ``None``.
+   * *exc_traceback*: Exception traceback, can be ``None``.
+   * *thread*: Thread which raised the exception, can be ``None``.
+
+   If *exc_type* is :exc:`SystemExit`, the exception is silently ignored.
+   Otherwise, the exception is printed out on :data:`sys.stderr`.
+
+   If  this function raises an exception, :func:`sys.excepthook` is called to
+   handle it.
+
+   :func:`threading.excepthook` can be overridden to control how uncaught
+   exceptions raised by :func:`Thread.run` are handled.
+
+   .. seealso::
+      :func:`sys.excepthook` handles uncaught exceptions.
+
+   .. versionadded:: 3.8
+
+
 .. function:: get_ident()
 
    Return the 'thread identifier' of the current thread.  This is a nonzero
@@ -47,6 +73,18 @@ This module defines the following functions:
    created.
 
    .. versionadded:: 3.3
+
+
+.. function:: get_native_id()
+
+   Return the native integral Thread ID of the current thread assigned by the kernel.
+   This is a non-negative integer.
+   Its value may be used to uniquely identify this particular thread system-wide
+   (until the thread terminates, after which the value may be recycled by the OS).
+
+   .. availability:: Windows, FreeBSD, Linux, macOS.
+
+   .. versionadded:: 3.8
 
 
 .. function:: enumerate()
@@ -100,7 +138,8 @@ This module defines the following functions:
    memory page size - platform documentation should be referred to for more
    information (4 KiB pages are common; using multiples of 4096 for the stack size is
    the suggested approach in the absence of more specific information).
-   Availability: Windows, systems with POSIX threads.
+
+   .. availability:: Windows, systems with POSIX threads.
 
 
 This module also defines the following constant:
@@ -178,6 +217,10 @@ called is terminated.
 A thread has a name.  The name can be passed to the constructor, and read or
 changed through the :attr:`~Thread.name` attribute.
 
+If the :meth:`~Thread.run` method raises an exception,
+:func:`threading.excepthook` is called to handle it. By default,
+:func:`threading.excepthook` ignores silently :exc:`SystemExit`.
+
 A thread can be flagged as a "daemon thread".  The significance of this flag is
 that the entire Python program exits when only daemon threads are left.  The
 initial value is inherited from the creating thread.  The flag can be set
@@ -249,7 +292,7 @@ since it is impossible to detect the termination of alien threads.
 
       You may override this method in a subclass.  The standard :meth:`run`
       method invokes the callable object passed to the object's constructor as
-      the *target* argument, if any, with sequential and keyword arguments taken
+      the *target* argument, if any, with positional and keyword arguments taken
       from the *args* and *kwargs* arguments, respectively.
 
    .. method:: join(timeout=None)
@@ -295,6 +338,26 @@ since it is impossible to detect the termination of alien threads.
       function.  Thread identifiers may be recycled when a thread exits and
       another thread is created.  The identifier is available even after the
       thread has exited.
+
+   .. attribute:: native_id
+
+      The native integral thread ID of this thread.
+      This is a non-negative integer, or ``None`` if the thread has not
+      been started. See the :func:`get_native_id` function.
+      This represents the Thread ID (``TID``) as assigned to the
+      thread by the OS (kernel).  Its value may be used to uniquely identify
+      this particular thread system-wide (until the thread terminates,
+      after which the value may be recycled by the OS).
+
+      .. note::
+
+         Similar to Process IDs, Thread IDs are only valid (guaranteed unique
+         system-wide) from the time the thread is created until the thread
+         has been terminated.
+
+      .. availability:: Windows, FreeBSD, Linux, macOS.
+
+      .. versionadded:: 3.8
 
    .. method:: is_alive()
 
@@ -400,7 +463,8 @@ All methods are executed atomically.
          The *timeout* parameter is new.
 
       .. versionchanged:: 3.2
-         Lock acquires can now be interrupted by signals on POSIX.
+         Lock acquisition can now be interrupted by signals on POSIX if the
+         underlying threading implementation supports it.
 
 
    .. method:: release()
@@ -684,8 +748,8 @@ Semaphores also support the :ref:`context management protocol <with-locks>`.
 
 .. class:: Semaphore(value=1)
 
-   This class implements semaphore objects.  A semaphore manages a counter
-   representing the number of :meth:`release` calls minus the number of
+   This class implements semaphore objects.  A semaphore manages an atomic
+   counter representing the number of :meth:`release` calls minus the number of
    :meth:`acquire` calls, plus an initial value.  The :meth:`acquire` method
    blocks if necessary until it can return without making the counter negative.
    If not given, *value* defaults to 1.
@@ -701,19 +765,19 @@ Semaphores also support the :ref:`context management protocol <with-locks>`.
 
       Acquire a semaphore.
 
-      When invoked without arguments: if the internal counter is larger than
-      zero on entry, decrement it by one and return immediately.  If it is zero
-      on entry, block, waiting until some other thread has called
-      :meth:`~Semaphore.release` to make it larger than zero.  This is done
-      with proper interlocking so that if multiple :meth:`acquire` calls are
-      blocked, :meth:`~Semaphore.release` will wake exactly one of them up.
-      The implementation may pick one at random, so the order in which
-      blocked threads are awakened should not be relied on.  Returns
-      true (or blocks indefinitely).
+      When invoked without arguments:
+
+      * If the internal counter is larger than zero on entry, decrement it by
+        one and return true immediately.
+      * If the internal counter is zero on entry, block until awoken by a call to
+        :meth:`~Semaphore.release`.  Once awoken (and the counter is greater
+        than 0), decrement the counter by 1 and return true.  Exactly one
+        thread will be awoken by each call to :meth:`~Semaphore.release`.  The
+        order in which threads are awoken should not be relied on.
 
       When invoked with *blocking* set to false, do not block.  If a call
-      without an argument would block, return false immediately; otherwise,
-      do the same thing as when called without arguments, and return true.
+      without an argument would block, return false immediately; otherwise, do
+      the same thing as when called without arguments, and return true.
 
       When invoked with a *timeout* other than ``None``, it will block for at
       most *timeout* seconds.  If acquire does not complete successfully in
@@ -935,7 +999,7 @@ As an example, here is a simple way to synchronize a client and server thread::
       Return the barrier to the default, empty state.  Any threads waiting on it
       will receive the :class:`BrokenBarrierError` exception.
 
-      Note that using this function may can require some external
+      Note that using this function may require some external
       synchronization if there are other threads whose state is unknown.  If a
       barrier is broken it may be better to just leave it and create a new one.
 
@@ -943,7 +1007,7 @@ As an example, here is a simple way to synchronize a client and server thread::
 
       Put the barrier into a broken state.  This causes any active or future
       calls to :meth:`wait` to fail with the :class:`BrokenBarrierError`.  Use
-      this for example if one of the needs to abort, to avoid deadlocking the
+      this for example if one of the threads needs to abort, to avoid deadlocking the
       application.
 
       It may be preferable to simply create the barrier with a sensible
@@ -971,8 +1035,8 @@ As an example, here is a simple way to synchronize a client and server thread::
 
 .. _with-locks:
 
-Using locks, conditions, and semaphores in the :keyword:`with` statement
-------------------------------------------------------------------------
+Using locks, conditions, and semaphores in the :keyword:`!with` statement
+-------------------------------------------------------------------------
 
 All of the objects provided by this module that have :meth:`acquire` and
 :meth:`release` methods can be used as context managers for a :keyword:`with`

@@ -1,3 +1,9 @@
+""" idlelib.run
+
+Simplified, pyshell.ModifiedInterpreter spawns a subprocess with
+f'''{sys.executable} -c "__import__('idlelib.run').run.main()"'''
+'.run' is needed because __import__ returns idlelib, not idlelib.run.
+"""
 import io
 import linecache
 import queue
@@ -8,10 +14,8 @@ import _thread as thread
 import threading
 import warnings
 
-import tkinter  # Tcl, deletions, messagebox if startup fails
-
 from idlelib import autocomplete  # AutoComplete, fetch_encodings
-from idlelib import calltips  # CallTips
+from idlelib import calltip  # Calltip
 from idlelib import debugger_r  # start_debugger
 from idlelib import debugobj_r  # remote_object_tree_item
 from idlelib import iomenu  # encoding
@@ -19,11 +23,16 @@ from idlelib import rpc  # multiple objects
 from idlelib import stackviewer  # StackTreeItem
 import __main__
 
-for mod in ('simpledialog', 'messagebox', 'font',
-            'dialog', 'filedialog', 'commondialog',
-            'ttk'):
-    delattr(tkinter, mod)
-    del sys.modules['tkinter.' + mod]
+import tkinter  # Use tcl and, if startup fails, messagebox.
+if not hasattr(sys.modules['idlelib.run'], 'firstrun'):
+    # Undo modifications of tkinter by idlelib imports; see bpo-25507.
+    for mod in ('simpledialog', 'messagebox', 'font',
+                'dialog', 'filedialog', 'commondialog',
+                'ttk'):
+        delattr(tkinter, mod)
+        del sys.modules['tkinter.' + mod]
+    # Avoid AttributeError if run again; see bpo-37038.
+    sys.modules['idlelib.run'].firstrun = False
 
 LOCALHOST = '127.0.0.1'
 
@@ -134,13 +143,17 @@ def main(del_exitfunc=False):
                     # exiting but got an extra KBI? Try again!
                     continue
             try:
-                seq, request = rpc.request_queue.get(block=True, timeout=0.05)
+                request = rpc.request_queue.get(block=True, timeout=0.05)
             except queue.Empty:
+                request = None
+                # Issue 32207: calling handle_tk_events here adds spurious
+                # queue.Empty traceback to event handling exceptions.
+            if request:
+                seq, (method, args, kwargs) = request
+                ret = method(*args, **kwargs)
+                rpc.response_queue.put((seq, ret))
+            else:
                 handle_tk_events()
-                continue
-            method, args, kwargs = request
-            ret = method(*args, **kwargs)
-            rpc.response_queue.put((seq, ret))
         except KeyboardInterrupt:
             if quitting:
                 exit_now = True
@@ -203,16 +216,16 @@ def print_exception():
     seen = set()
 
     def print_exc(typ, exc, tb):
-        seen.add(exc)
+        seen.add(id(exc))
         context = exc.__context__
         cause = exc.__cause__
-        if cause is not None and cause not in seen:
+        if cause is not None and id(cause) not in seen:
             print_exc(type(cause), cause, cause.__traceback__)
             print("\nThe above exception was the direct cause "
                   "of the following exception:\n", file=efile)
         elif (context is not None and
               not exc.__suppress_context__ and
-              context not in seen):
+              id(context) not in seen):
             print_exc(type(context), context, context.__traceback__)
             print("\nDuring handling of the above exception, "
                   "another exception occurred:\n", file=efile)
@@ -458,7 +471,7 @@ class Executive(object):
     def __init__(self, rpchandler):
         self.rpchandler = rpchandler
         self.locals = __main__.__dict__
-        self.calltip = calltips.CallTips()
+        self.calltip = calltip.Calltip()
         self.autocomplete = autocomplete.AutoComplete()
 
     def runcode(self, code):
@@ -470,15 +483,16 @@ class Executive(object):
                 exec(code, self.locals)
             finally:
                 interruptable = False
-        except SystemExit:
-            # Scripts that raise SystemExit should just
-            # return to the interactive prompt
-            pass
+        except SystemExit as e:
+            if e.args:  # SystemExit called with an argument.
+                ob = e.args[0]
+                if not isinstance(ob, (type(None), int)):
+                    print('SystemExit: ' + str(ob), file=sys.stderr)
+            # Return to the interactive prompt.
         except:
             self.usr_exc_info = sys.exc_info()
             if quitting:
                 exit()
-            # even print a user code SystemExit exception, continue
             print_exception()
             jit = self.rpchandler.console.getvar("<<toggle-jit-stack-viewer>>")
             if jit:
@@ -518,4 +532,9 @@ class Executive(object):
         item = stackviewer.StackTreeItem(flist, tb)
         return debugobj_r.remote_object_tree_item(item)
 
-capture_warnings(False)  # Make sure turned off; see issue 18081
+
+if __name__ == '__main__':
+    from unittest import main
+    main('idlelib.idle_test.test_run', verbosity=2)
+
+capture_warnings(False)  # Make sure turned off; see bpo-18081.
